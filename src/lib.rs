@@ -5,24 +5,43 @@ pub trait Parser {
 
     fn parse<'a>(&self, input: &'a str) -> Option<(Self::Out, &'a str)>;
 
-    // fn map<B>(self, transform: Box<dyn Fn(Self::Out) -> B>) -> Map<Self, B> where Self: Sized {
-    fn map<B, F: Fn(Self::Out) -> B>(self, transform: F) -> Map<Self, F> where Self: Sized {
+    fn map<B>(self, transform: Box<dyn Fn(Self::Out) -> B>) -> Map<Self, B>
+    where
+        Self: Sized,
+    {
         Map::new(transform, self)
     }
 
-    fn map2<Q: Parser, B, F: Fn(Self::Out, <Q as Parser>::Out) -> B>(self, second: Q, transform: F) -> Map2<Self, Q, F> where Self: Sized {
-        Map2::new(transform, self, second)
+    fn map2<Q: Parser, B>(
+        self,
+        second: Q,
+        transform: Box<dyn Fn(Self::Out, <Q as Parser>::Out) -> B>,
+    ) -> Map<And<Self, Q>, B>
+    where
+        Self: Sized,
+    {
+        self.and(second)
+            .map(Box::new(|(item1, item2)| transform(item1, item2)))
     }
 
-    fn flat_map<Q: Parser, F: Fn(Self::Out) -> Q>(self, transform: F) -> FlatMap<Self, F> where Self: Sized {
+    fn flat_map<Q: Parser>(self, transform: Box<dyn Fn(Self::Out) -> Q>) -> FlatMap<Self, Q>
+    where
+        Self: Sized,
+    {
         FlatMap::new(transform, self)
     }
 
-    fn or(self, second: Self) -> Or<Self> where Self: Sized {
+    fn or(self, second: Self) -> Or<Self>
+    where
+        Self: Sized,
+    {
         Or::new(self, second)
     }
 
-    fn and<P: Parser>(self, second: P) -> And<Self, P> where Self: Sized {
+    fn and<P: Parser>(self, second: P) -> And<Self, P>
+    where
+        Self: Sized,
+    {
         And::new(self, second)
     }
 }
@@ -65,22 +84,19 @@ impl<A> Parser for Zero<A> {
     }
 }
 
-
-pub struct Satisfy<P> {
-    // predicate: Box<dyn Fn(char) -> bool>
-    predicate: P
+pub struct Satisfy {
+    predicate: Box<dyn Fn(char) -> bool>, // predicate: P,
 }
 
-
-impl<P> Satisfy<P> {
-    pub fn new(predicate: P) -> Self {
+impl Satisfy {
+    pub fn new(predicate: Box<dyn Fn(char) -> bool>) -> Self {
         Self {
-            predicate: predicate
+            predicate: predicate,
         }
     }
 }
 
-impl<P: Fn(char) -> bool> Parser for Satisfy<P> {
+impl Parser for Satisfy {
     type Out = char;
 
     fn parse<'a>(&self, input: &'a str) -> Option<(Self::Out, &'a str)> {
@@ -96,15 +112,14 @@ impl<P: Fn(char) -> bool> Parser for Satisfy<P> {
 
 pub struct Or<P> {
     first: P,
-    second: P
+    second: P,
 }
-
 
 impl<P> Or<P> {
     pub fn new(first: P, second: P) -> Self {
         Self {
             first: first,
-            second: second
+            second: second,
         }
     }
 }
@@ -119,15 +134,14 @@ impl<P: Parser> Parser for Or<P> {
 
 pub struct And<P, Q> {
     first: P,
-    second: Q
+    second: Q,
 }
-
 
 impl<P, Q> And<P, Q> {
     pub fn new(first: P, second: Q) -> Self {
         Self {
             first: first,
-            second: second
+            second: second,
         }
     }
 }
@@ -137,29 +151,28 @@ impl<P: Parser, Q: Parser> Parser for And<P, Q> {
 
     fn parse<'a>(&self, input: &'a str) -> Option<(Self::Out, &'a str)> {
         self.first.parse(input).and_then(move |(item, rest)| {
-            self.second.parse(rest).map(|(next, leftover)| {
-                ((item, next), leftover)
-            })
+            self.second
+                .parse(rest)
+                .map(|(next, leftover)| ((item, next), leftover))
         })
     }
 }
 
-pub struct Map<P: Parser, F> {
-    transform: F,
-    parser: P
+pub struct Map<P: Parser, B> {
+    transform: Box<dyn Fn(<P as Parser>::Out) -> B>,
+    parser: P,
 }
 
-
-impl<P: Parser, F> Map<P, F> {
-    pub fn new(transform: F, parser: P) -> Self {
+impl<P: Parser, B> Map<P, B> {
+    pub fn new(transform: Box<dyn Fn(<P as Parser>::Out) -> B>, parser: P) -> Self {
         Self {
             transform: transform,
-            parser: parser
+            parser: parser,
         }
     }
 }
 
-impl<P: Parser, B, F: Fn(<P as Parser>::Out) -> B> Parser for Map<P, F> {
+impl<P: Parser, B> Parser for Map<P, B> {
     type Out = B;
 
     fn parse<'a>(&self, input: &'a str) -> Option<(Self::Out, &'a str)> {
@@ -169,51 +182,21 @@ impl<P: Parser, B, F: Fn(<P as Parser>::Out) -> B> Parser for Map<P, F> {
     }
 }
 
-pub struct Map2<P: Parser, Q, F> {
-    transform: F,
-    first: P,
-    second: Q
+pub struct FlatMap<P: Parser, Q: Parser> {
+    transform: Box<dyn Fn(<P as Parser>::Out) -> Q>,
+    parser: P,
 }
 
-
-impl<P: Parser, Q, F> Map2<P, Q, F> {
-    pub fn new(transform: F, first: P, second: Q) -> Self {
+impl<P: Parser, Q: Parser> FlatMap<P, Q> {
+    pub fn new(transform: Box<dyn Fn(<P as Parser>::Out) -> Q>, parser: P) -> Self {
         Self {
             transform: transform,
-            first: first,
-            second: second 
+            parser: parser,
         }
     }
 }
 
-impl<P: Parser, Q: Parser, B, F: Fn(<P as Parser>::Out, <Q as Parser>::Out) -> B> Parser for Map2<P, Q, F> {
-    type Out = B;
-
-    fn parse<'a>(&self, input: &'a str) -> Option<(Self::Out, &'a str)> {
-        self.first.parse(input).and_then(|(item, rest)| {
-            self.second.parse(rest).map(|(item2, leftover)| {
-                ((self.transform)(item, item2), leftover)
-            })
-        })
-    }
-}
-
-pub struct FlatMap<P, F> {
-    transform: F,
-    parser: P
-}
-
-
-impl<P, F> FlatMap<P, F> {
-    pub fn new(transform: F, parser: P) -> Self {
-        Self {
-            transform: transform,
-            parser: parser
-        }
-    }
-}
-
-impl<P: Parser, Q: Parser, F: Fn(<P as Parser>::Out) -> Q> Parser for FlatMap<P, F> {
+impl<P: Parser, Q: Parser> Parser for FlatMap<P, Q> {
     type Out = <Q as Parser>::Out;
 
     fn parse<'a>(&self, input: &'a str) -> Option<(Self::Out, &'a str)> {
@@ -224,7 +207,7 @@ impl<P: Parser, Q: Parser, F: Fn(<P as Parser>::Out) -> Q> Parser for FlatMap<P,
 }
 
 pub struct Char {
-    it: char
+    it: char,
 }
 
 impl Char {
@@ -237,13 +220,13 @@ impl Parser for Char {
     type Out = char;
 
     fn parse<'a>(&self, input: &'a str) -> Option<(Self::Out, &'a str)> {
-        Satisfy::new(|item| item == self.it).parse(input)
+        let the_char = self.it;
+        Satisfy::new(Box::new(|item| item == the_char)).parse(input)
     }
 }
 
-
 pub struct Many<P> {
-    parser: P
+    parser: P,
 }
 
 impl<P> Many<P> {
@@ -269,7 +252,7 @@ impl<P: Parser> Parser for Many<P> {
 }
 
 pub struct AtLeast1<P> {
-    parser: P
+    parser: P,
 }
 
 impl<P> AtLeast1<P> {
@@ -296,15 +279,15 @@ impl<P: Parser> Parser for AtLeast1<P> {
     }
 }
 
-
-
-pub fn whitespace() -> Satisfy<fn(char) -> bool> {
-    Satisfy { predicate: char::is_whitespace }
+pub fn whitespace() -> Satisfy {
+    Satisfy {
+        predicate: Box::new(char::is_whitespace),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{assert_eq, assert};
+    use std::{assert, assert_eq};
 
     use super::*;
 
@@ -319,23 +302,18 @@ mod tests {
 
         let (result, rest) = Char::new('h').parse(it).unwrap();
 
-
         assert_eq!(result, 'h');
         assert_eq!(rest, "ello world");
     }
-
 
     #[test]
     fn hello_world_h_mapped() {
         let it = "hello world";
 
-
-        let (result, rest): (char, &str) = 
-            Char::new('h')
-                .map(|item| item.to_ascii_uppercase())
-                .parse(it)
-                .unwrap();
-
+        let (result, rest): (char, &str) = Char::new('h')
+            .map(Box::new(|item| item.to_ascii_uppercase()))
+            .parse(it)
+            .unwrap();
 
         assert_eq!(result, 'H');
         assert_eq!(rest, "ello world");
@@ -345,12 +323,7 @@ mod tests {
     fn whitespace_test() {
         let it = " world";
 
-
-        let (result, rest): (char, &str) = 
-            whitespace()
-                .parse(it)
-                .unwrap();
-
+        let (result, rest): (char, &str) = whitespace().parse(it).unwrap();
 
         assert_eq!(result, ' ');
         assert_eq!(rest, "world");
@@ -360,12 +333,9 @@ mod tests {
     fn many_test() {
         let it = "hello world";
 
-
-        let (result, rest)  = 
-            Many::new(Satisfy::new(char::is_alphabetic))
-                .parse(it)
-                .unwrap();
-
+        let (result, rest) = Many::new(Satisfy::new(Box::new(char::is_alphabetic)))
+            .parse(it)
+            .unwrap();
 
         assert_eq!(result, vec!['h', 'e', 'l', 'l', 'o']);
         assert_eq!(rest, " world");
@@ -375,12 +345,7 @@ mod tests {
     fn many_with_no_match_test() {
         let it = "hello world";
 
-
-        let (result, rest)  = 
-            Many::new(Char::new('X'))
-                .parse(it)
-                .unwrap();
-
+        let (result, rest) = Many::new(Char::new('X')).parse(it).unwrap();
 
         assert_eq!(result, vec![]);
         assert_eq!(rest, "hello world");
@@ -390,12 +355,9 @@ mod tests {
     fn at_least_1_test() {
         let it = "hello world";
 
-
-        let (result, rest)  = 
-            AtLeast1::new(Satisfy::new(char::is_alphabetic))
-                .parse(it)
-                .unwrap();
-
+        let (result, rest) = AtLeast1::new(Satisfy::new(Box::new(char::is_alphabetic)))
+            .parse(it)
+            .unwrap();
 
         assert_eq!(result, vec!['h', 'e', 'l', 'l', 'o']);
         assert_eq!(rest, " world");
@@ -405,11 +367,7 @@ mod tests {
     fn at_least_1_with_no_match_test() {
         let it = "hello world";
 
-
-        let result = 
-            AtLeast1::new(Char::new('X'))
-                .parse(it);
-
+        let result = AtLeast1::new(Char::new('X')).parse(it);
 
         assert!(result.is_none());
     }
@@ -418,13 +376,12 @@ mod tests {
     fn hello_world_h_flat_mapped() {
         let it = "hello world";
 
-
-        let (result, rest) = 
-            Char::new('h')
-                .flat_map(|item| Success::new(Rc::new(item.to_ascii_uppercase())))
-                .parse(it)
-                .unwrap();
-
+        let (result, rest) = Char::new('h')
+            .flat_map(Box::new(|item| {
+                Success::new(Rc::new(item.to_ascii_uppercase()))
+            }))
+            .parse(it)
+            .unwrap();
 
         assert_eq!(*result, 'H');
         assert_eq!(rest, "ello world");
@@ -434,13 +391,7 @@ mod tests {
     fn or_first_success() {
         let it = "hello world";
 
-
-        let (result, rest) = 
-            Char::new('h')
-                .or(Char::new('X'))
-                .parse(it)
-                .unwrap();
-
+        let (result, rest) = Char::new('h').or(Char::new('X')).parse(it).unwrap();
 
         assert_eq!(result, 'h');
         assert_eq!(rest, "ello world");
@@ -450,17 +401,9 @@ mod tests {
     fn or_second_success() {
         let it = "hello world";
 
-
-        let (result, rest) = 
-            Char::new('X')
-                .or(Char::new('h'))
-                .parse(it)
-                .unwrap();
-
+        let (result, rest) = Char::new('X').or(Char::new('h')).parse(it).unwrap();
 
         assert_eq!(result, 'h');
         assert_eq!(rest, "ello world");
     }
-
-
 }
