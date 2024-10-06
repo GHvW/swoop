@@ -16,15 +16,31 @@ pub trait Parser {
         self,
         second: Q,
         transform: impl Fn(Self::Out, <Q as Parser>::Out) -> B + 'a,
-    ) -> Map<'a, And<Self, Q>, B>
+    ) -> Map<'a, Zip<Self, Q>, B>
     where
         Self: Sized,
     {
-        self.and(second)
+        self.zip(second)
             .map(move |(item1, item2)| transform(item1, item2))
     }
 
-    fn flat_map<'a, Q: Parser>(self, transform: impl Fn(Self::Out) -> Q + 'a) -> FlatMap<'a, Self, Q>
+    fn map3<'a, Q: Parser, R: Parser, B>(
+        self,
+        second: Q,
+        third: R,
+        transform: impl Fn(Self::Out, <Q as Parser>::Out, <R as Parser>::Out) -> B + 'a,
+    ) -> Map<'a, Zip3<Self, Q, R>, B>
+    where
+        Self: Sized,
+    {
+        self.zip3(second, third)
+            .map(move |(item1, item2, item3)| transform(item1, item2, item3))
+    }
+
+    fn flat_map<'a, Q: Parser>(
+        self,
+        transform: impl Fn(Self::Out) -> Q + 'a,
+    ) -> FlatMap<'a, Self, Q>
     where
         Self: Sized,
     {
@@ -38,11 +54,18 @@ pub trait Parser {
         Or::new(self, second)
     }
 
-    fn and<P: Parser>(self, second: P) -> And<Self, P>
+    fn zip<P: Parser>(self, second: P) -> Zip<Self, P>
     where
         Self: Sized,
     {
-        And::new(self, second)
+        Zip::new(self, second)
+    }
+
+    fn zip3<P: Parser, Q: Parser>(self, second: P, third: Q) -> Zip3<Self, P, Q>
+    where
+        Self: Sized,
+    {
+        Zip3::new(self, second, third)
     }
 }
 
@@ -132,12 +155,12 @@ impl<P: Parser> Parser for Or<P> {
     }
 }
 
-pub struct And<P, Q> {
+pub struct Zip<P, Q> {
     first: P,
     second: Q,
 }
 
-impl<P, Q> And<P, Q> {
+impl<P, Q> Zip<P, Q> {
     pub fn new(first: P, second: Q) -> Self {
         Self {
             first: first,
@@ -146,7 +169,7 @@ impl<P, Q> And<P, Q> {
     }
 }
 
-impl<P: Parser, Q: Parser> Parser for And<P, Q> {
+impl<P: Parser, Q: Parser> Parser for Zip<P, Q> {
     type Out = (<P as Parser>::Out, <Q as Parser>::Out);
 
     fn parse<'a>(&self, input: &'a str) -> Option<(Self::Out, &'a str)> {
@@ -154,6 +177,36 @@ impl<P: Parser, Q: Parser> Parser for And<P, Q> {
             self.second
                 .parse(rest)
                 .map(|(next, leftover)| ((item, next), leftover))
+        })
+    }
+}
+
+pub struct Zip3<P, Q, R> {
+    first: P,
+    second: Q,
+    third: R,
+}
+
+impl<P, Q, R> Zip3<P, Q, R> {
+    pub fn new(first: P, second: Q, third: R) -> Self {
+        Self {
+            first: first,
+            second: second,
+            third: third,
+        }
+    }
+}
+
+impl<P: Parser, Q: Parser, R: Parser> Parser for Zip3<P, Q, R> {
+    type Out = (<P as Parser>::Out, <Q as Parser>::Out, <R as Parser>::Out);
+
+    fn parse<'a>(&self, input: &'a str) -> Option<(Self::Out, &'a str)> {
+        self.first.parse(input).and_then(move |(item, rest)| {
+            self.second.parse(rest).and_then(move |(item2, rest2)| {
+                self.third
+                    .parse(rest2)
+                    .map(|(item3, leftover)| ((item, item2, item3), leftover))
+            })
         })
     }
 }
@@ -309,17 +362,15 @@ mod tests {
     fn hello_world_h_mapped() {
         let it = "hello world";
 
-        let (result, rest): (char, &str) = 
-            Char::new('h')
-                .map(|item| item.to_ascii_uppercase())
-                // .map(char::to_ascii_uppercase)
-                .parse(it)
-                .unwrap();
+        let (result, rest): (char, &str) = Char::new('h')
+            .map(|item| item.to_ascii_uppercase())
+            // .map(char::to_ascii_uppercase)
+            .parse(it)
+            .unwrap();
 
         assert_eq!(result, 'H');
         assert_eq!(rest, "ello world");
     }
-
 
     #[test]
     fn whitespace_test() {
@@ -335,10 +386,9 @@ mod tests {
     fn many_test() {
         let it = "hello world";
 
-        let (result, rest) = 
-            Many::new(Satisfy::new(char::is_alphabetic))
-                .parse(it)
-                .unwrap();
+        let (result, rest) = Many::new(Satisfy::new(char::is_alphabetic))
+            .parse(it)
+            .unwrap();
 
         assert_eq!(result, vec!['h', 'e', 'l', 'l', 'o']);
         assert_eq!(rest, " world");
@@ -348,10 +398,7 @@ mod tests {
     fn many_with_no_match_test() {
         let it = "hello world";
 
-        let (result, rest) = 
-            Many::new(Char::new('X'))
-                .parse(it)
-                .unwrap();
+        let (result, rest) = Many::new(Char::new('X')).parse(it).unwrap();
 
         assert_eq!(result, vec![]);
         assert_eq!(rest, "hello world");
@@ -361,10 +408,9 @@ mod tests {
     fn at_least_1_test() {
         let it = "hello world";
 
-        let (result, rest) = 
-            AtLeast1::new(Satisfy::new(char::is_alphabetic))
-                .parse(it)
-                .unwrap();
+        let (result, rest) = AtLeast1::new(Satisfy::new(char::is_alphabetic))
+            .parse(it)
+            .unwrap();
 
         assert_eq!(result, vec!['h', 'e', 'l', 'l', 'o']);
         assert_eq!(rest, " world");
@@ -383,13 +429,10 @@ mod tests {
     fn hello_world_h_flat_mapped() {
         let it = "hello world";
 
-        let (result, rest) = 
-            Char::new('h')
-                .flat_map(|item| {
-                    Success::new(Rc::new(item.to_ascii_uppercase()))
-                })
-                .parse(it)
-                .unwrap();
+        let (result, rest) = Char::new('h')
+            .flat_map(|item| Success::new(Rc::new(item.to_ascii_uppercase())))
+            .parse(it)
+            .unwrap();
 
         assert_eq!(*result, 'H');
         assert_eq!(rest, "ello world");
@@ -414,4 +457,14 @@ mod tests {
         assert_eq!(result, 'h');
         assert_eq!(rest, "ello world");
     }
+
+    // #[test]
+    // fn map3_test() {
+    //     let it = "hello world";
+
+    //     let (result, rest) =
+    //         Char::new('h').map3(Char::new('e'), Char::new('l'), |one, two, three| {
+    //             one.
+    //         });
+    // }
 }
